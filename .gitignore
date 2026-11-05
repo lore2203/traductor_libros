@@ -1,0 +1,4 @@
+# Archivos a ignorar
+venv/
+__pycache__/
+*.db
