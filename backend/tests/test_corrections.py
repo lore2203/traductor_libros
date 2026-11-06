@@ -177,3 +177,24 @@ def test_big_kept_number_survives_erasing_text_inside_its_box(tmp_path):
     _restore_kept_chars(page, risk, FontResolver(doc, tmp_path))
     text = page.get_text()
     assert "1" in text and "CHAPTER" not in text
+
+
+def test_number_check_line_breaks_and_repeated_roman_numerals():
+    assert check_translation("<b>1st house </b>see pp.90-91<br><b>5th house </b>see pp.98-99",
+                             "<b>Casa 1 </b>ver pp. 90-91<br><b>Casa 5 </b>ver pp. 98-99") == []
+    assert check_translation("<b>The 19th and 20th centuries</b><br>A revival at the end of the 19th century.",
+                             "<b>Los siglos XIX y XX</b><br>Un resurgir a finales del siglo XIX.") == []
+
+
+def test_lost_vector_is_flagged_only_when_visible():
+    from app.pipeline.validate import _graphics_differ
+
+    doc = pymupdf.open()
+    with_shape = doc.new_page()
+    with_shape.draw_rect(pymupdf.Rect(50, 50, 100, 80), fill=(1, 0, 0))
+    without = doc.new_page()
+    assert _graphics_differ(with_shape, without, pymupdf.Rect(50, 50, 100, 80))
+    hidden = doc.new_page()  # mismo gráfico tapado por una caja blanca: su ausencia no se nota
+    hidden.draw_rect(pymupdf.Rect(50, 50, 100, 80), fill=(1, 0, 0))
+    hidden.draw_rect(pymupdf.Rect(40, 40, 110, 90), fill=(1, 1, 1))
+    assert not _graphics_differ(doc[2], doc[1], pymupdf.Rect(50, 50, 100, 80))

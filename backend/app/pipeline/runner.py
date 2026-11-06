@@ -246,11 +246,12 @@ def run_pipeline(
 
     rebuild(doc, pages, fonts, opts.min_font_scale, opts.min_font_size_pt, on_page=on_page, shorten=shorten)
     out_pdf = out_dir / spanish_filename(title_es, Path(input_pdf).stem + " ES")
-    try:
-        doc.subset_fonts()
-    except Exception as e:  # noqa: BLE001
-        log.debug("subset_fonts falló: %s", e)
-    doc.save(out_pdf, garbage=3, deflate=True)
+    # No se usa doc.subset_fonts(): también vuelve a recortar las fuentes originales (subconjuntos CFF de
+    # InDesign) y en algunos libros cambia sus glifos (un "81" pasaba a verse "28"). Cada fuente nueva se
+    # incrusta una sola vez en el documento, así que el tamaño apenas crece.
+    # garbage=1: elimina objetos sin uso sin renumerar. Con 2 o más (compactar/renumerar) algunos PDF de
+    # InDesign pierden referencias (desaparecen números de página o fuentes); el tamaño es prácticamente igual.
+    doc.save(out_pdf, garbage=1, deflate=True)
     doc.close()
     shutil.rmtree(out_dir / "_fonts", ignore_errors=True)
 

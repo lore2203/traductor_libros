@@ -42,6 +42,56 @@ def _visual_diff_outside_text(p_orig: pymupdf.Page, p_new: pymupdf.Page, info: P
     return changed / total
 
 
+def _lost_drawings(pa: pymupdf.Page, pb: pymupdf.Page, info: PageInfo) -> list[pymupdf.Rect]:
+    """Gráficos del original que ya no están, sin contar los pequeños que estaban dentro de una línea de
+    texto traducido (subrayados, resaltados o letras dibujadas como vector que forman parte de ese texto
+    y se reemplazan con él)."""
+    from collections import Counter
+
+    def key(d):
+        return (d["type"], tuple(round(v) for v in d["rect"]), str(d.get("fill")), str(d.get("color")))
+
+    before = {key(d): pymupdf.Rect(d["rect"]) for d in pa.get_drawings()}
+    missing = Counter(key(d) for d in pa.get_drawings()) - Counter(key(d) for d in pb.get_drawings())
+    lines = [pymupdf.Rect(r) for s in info.segments if s.action == "translate" for r in s.line_rects]
+    lost = []
+    for k in missing:
+        r = before[k]
+        # puede caer entre dos líneas: se suma la parte cubierta por cada una
+        covered = sum(abs(r & pymupdf.Rect(l.x0 - 1, l.y0 - 3, l.x1 + 1, l.y1 + 3)) for l in lines)
+        in_text = covered >= 0.8 * max(abs(r), 1e-6)
+        if in_text and r.height <= 20:
+            continue
+        lost.append(r)
+    if lost:
+        lost = [r for r in lost if _graphics_differ(pa, pb, r)]
+    return lost
+
+
+def _without_text(page: pymupdf.Page, dpi: int = 100) -> tuple[Image.Image, float]:
+    """Render de la página sin su texto (solo imágenes y vectores)."""
+    doc = pymupdf.open()
+    doc.insert_pdf(page.parent, from_page=page.number, to_page=page.number)
+    pg = doc[0]
+    pg.add_redact_annot(pg.rect)
+    pg.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+                        text=pymupdf.PDF_REDACT_TEXT_REMOVE)
+    return _render(pg, dpi), dpi / 72.0
+
+
+def _graphics_differ(pa: pymupdf.Page, pb: pymupdf.Page, r: pymupdf.Rect) -> bool:
+    """¿Se nota la ausencia del gráfico? Compara ambas páginas sin texto dentro de su zona."""
+    try:
+        (ia, k), (ib, _) = _without_text(pa), _without_text(pb)
+    except Exception:  # noqa: BLE001
+        return True
+    box = (int(r.x0 * k) - 1, int(r.y0 * k) - 1, int(r.x1 * k) + 2, int(r.y1 * k) + 2)
+    diff = ImageChops.difference(ia.crop(box), ib.crop(box)).convert("L").point(lambda v: 255 if v > 40 else 0)
+    hist = diff.histogram()
+    total = sum(hist) or 1
+    return hist[255] / total > 0.03
+
+
 def validate(original: Path, translated: Path, pages: list[PageInfo], visual: bool = True) -> dict:
     checks: dict[str, bool] = {}
     warnings: list[str] = []
@@ -83,8 +133,10 @@ def validate(original: Path, translated: Path, pages: list[PageInfo], visual: bo
             images_ok = False
             info.flag("Cambió el número de imágenes de la página")
         if len(pb.get_cdrawings()) < len(pa.get_cdrawings()):
-            vectors_ok = False
-            info.flag("Faltan elementos gráficos vectoriales")
+            lost = _lost_drawings(pa, pb, info)
+            if lost:
+                vectors_ok = False
+                info.flag(f"Faltan elementos gráficos vectoriales ({len(lost)})")
         text_b = pb.get_text()
         if PLACEHOLDER_RE.search(text_b):
             no_markers = False

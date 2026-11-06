@@ -237,7 +237,8 @@ def match_case(src_protected: str, translated: str) -> str:
 
 
 def plain(text: str) -> str:
-    return html.unescape(TAG_RE.sub("", text))
+    # <br> separa palabras ("pp.90-91<br>5th" no debe leerse como "915th")
+    return html.unescape(TAG_RE.sub("", re.sub(r"<br\s*/?>", " ", text)))
 
 
 def _roman_value(s: str) -> int:
@@ -324,8 +325,10 @@ def check_translation(src_protected: str, translated: str) -> list[str]:
         norm = lambda xs: sorted(re.sub(r"[.,:]", "", x) for x in xs)
         if norm(src_nums) != norm(tr_nums):
             # "4th century" -> "siglo IV": solo romanos tras "siglo(s)" o de 2+ letras (no la "C" de "a. C.")
-            cand = re.findall(r"\bsiglos?\s+([IVXLCDM]+)\b", tr_plain) + re.findall(r"\b([IVXLCDM]{2,})\b", tr_plain)
-            romans = [str(_roman_value(r)) for r in dict.fromkeys(cand) if _roman_value(r)]
+            # cada aparición cuenta una vez: "siglos XIX y XX" = 19 y 20; "siglo XIX ... siglo XIX" = dos 19
+            cand = [m.group(1) for m in re.finditer(r"\b([IVXLCDM]+)\b", tr_plain)
+                    if len(m.group(1)) >= 2 or re.search(r"siglos?\s+$", tr_plain[:m.start()])]
+            romans = [str(_roman_value(r)) for r in cand if _roman_value(r)]
             if norm(src_nums) != norm(tr_nums + romans):
                 issues.append("los números no coinciden con el original")
     if len(src_plain) > 25:
