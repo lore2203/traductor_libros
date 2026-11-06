@@ -211,9 +211,6 @@ def _escape(t: str) -> str:
 def erase_text_in_images(page: pymupdf.Page, rects: list[pymupdf.Rect]) -> int:
     """Borra el texto de las imágenes rasterizadas que lo contienen (inpainting) y reemplaza la imagen
     en el PDF. Devuelve cuántas imágenes se modificaron."""
-    import cv2
-    import numpy as np
-
     changed = 0
     doc = page.parent
     for info in page.get_image_info(xrefs=True):
@@ -224,50 +221,65 @@ def erase_text_in_images(page: pymupdf.Page, rects: list[pymupdf.Rect]) -> int:
         targets = [r for r in rects if abs(r & ibox) > 0.5 * abs(r)]
         if not targets:
             continue
-        pix = pymupdf.Pixmap(doc, xref)
-        if pix.alpha:
-            pix = pymupdf.Pixmap(pix, 0)
-        if pix.n == 4:  # CMYK: se trabaja en RGB (único caso con posible variación de color)
-            pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
-        n = pix.n
-        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, n).copy()
-        rgb = img if n == 3 else np.repeat(img, 3, axis=2)
-        sx, sy = pix.width / ibox.width, pix.height / ibox.height
-        mask = np.zeros(img.shape[:2], dtype=np.uint8)
-        for r in targets:
-            pad = 0.15 * r.height
-            x0, y0 = max(0, int((r.x0 - pad - ibox.x0) * sx)), max(0, int((r.y0 - pad - ibox.y0) * sy))
-            x1, y1 = int((r.x1 + pad - ibox.x0) * sx), int((r.y1 + pad - ibox.y0) * sy)
-            region = rgb[y0:y1, x0:x1].astype(int)
-            if region.size == 0:
-                continue
-            ring = np.concatenate([rgb[max(0, y0 - 6):y0, x0:x1].reshape(-1, 3),
-                                   rgb[y1:y1 + 6, x0:x1].reshape(-1, 3)])
-            bg = np.median(ring if ring.size else region.reshape(-1, 3), axis=0)
-            diff = np.abs(region - bg).sum(axis=2)
-            # color del texto = píxeles más alejados del fondo; la máscara solo toma ese color
-            # (así no se borran otros objetos de la ilustración que caen dentro de la caja)
-            strong = region[diff >= np.percentile(diff, 85)]
-            text_color = np.median(strong, axis=0) if strong.size else bg
-            close = np.abs(region - text_color).sum(axis=2) < 90
-            local = (close & (diff > 50)).astype(np.uint8) * 255
-            # incluir contornos/antialias pegados al texto
-            local = cv2.dilate(local, np.ones((3, 3), np.uint8), iterations=max(2, int(0.06 * (y1 - y0))))
-            mask[y0:y1, x0:x1] = np.maximum(mask[y0:y1, x0:x1], local)
-        if not mask.any():
-            continue
-        src = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if n == 3 else img[:, :, 0]
-        out = cv2.inpaint(src, mask, 9, cv2.INPAINT_TELEA)
-        ok, enc = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 94])
-        if not ok:
-            continue
-        keys = {k: doc.xref_get_key(xref, k) for k in ("ColorSpace", "Intent")}
-        page.replace_image(xref, stream=enc.tobytes())
-        # replace_image reescribe el objeto con un perfil ICC propio: se restaura el perfil original
-        # (p. ej. Adobe RGB) para que los tonos de la ilustración no cambien
-        if n == 3:
-            for k, (kind, val) in keys.items():
-                if kind not in ("null", None):
-                    doc.xref_set_key(xref, k, val)
-        changed += 1
+        try:
+            changed += _erase_in_image(page, xref, ibox, targets)
+        except Exception:  # una imagen rara no debe detener la traducción del libro
+            log.warning("No se pudo borrar el texto de la imagen %s (página %s)", xref, page.number + 1, exc_info=True)
     return changed
+
+
+def _erase_in_image(page: pymupdf.Page, xref: int, ibox: pymupdf.Rect, targets: list[pymupdf.Rect]) -> int:
+    import cv2
+    import numpy as np
+
+    doc = page.parent
+    pix = pymupdf.Pixmap(doc, xref)
+    if pix.colorspace is None:  # máscara o esténcil sin color: no hay texto que borrar en ella
+        return 0
+    if pix.alpha:
+        pix = pymupdf.Pixmap(pix, 0)
+    if pix.n == 4:  # CMYK: se trabaja en RGB (único caso con posible variación de color)
+        pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+    n = pix.n
+    if n not in (1, 3):
+        return 0
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, n).copy()
+    rgb = img if n == 3 else np.repeat(img, 3, axis=2)
+    sx, sy = pix.width / ibox.width, pix.height / ibox.height
+    mask = np.zeros(img.shape[:2], dtype=np.uint8)
+    for r in targets:
+        pad = 0.15 * r.height
+        x0, y0 = max(0, int((r.x0 - pad - ibox.x0) * sx)), max(0, int((r.y0 - pad - ibox.y0) * sy))
+        x1, y1 = int((r.x1 + pad - ibox.x0) * sx), int((r.y1 + pad - ibox.y0) * sy)
+        region = rgb[y0:y1, x0:x1].astype(int)
+        if region.size == 0:
+            continue
+        ring = np.concatenate([rgb[max(0, y0 - 6):y0, x0:x1].reshape(-1, 3),
+                               rgb[y1:y1 + 6, x0:x1].reshape(-1, 3)])
+        bg = np.median(ring if ring.size else region.reshape(-1, 3), axis=0)
+        diff = np.abs(region - bg).sum(axis=2)
+        # color del texto = píxeles más alejados del fondo; la máscara solo toma ese color
+        # (así no se borran otros objetos de la ilustración que caen dentro de la caja)
+        strong = region[diff >= np.percentile(diff, 85)]
+        text_color = np.median(strong, axis=0) if strong.size else bg
+        close = np.abs(region - text_color).sum(axis=2) < 90
+        local = (close & (diff > 50)).astype(np.uint8) * 255
+        # incluir contornos/antialias pegados al texto
+        local = cv2.dilate(local, np.ones((3, 3), np.uint8), iterations=max(2, int(0.06 * (y1 - y0))))
+        mask[y0:y1, x0:x1] = np.maximum(mask[y0:y1, x0:x1], local)
+    if not mask.any():
+        return 0
+    src = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if n == 3 else img[:, :, 0]
+    out = cv2.inpaint(src, mask, 9, cv2.INPAINT_TELEA)
+    ok, enc = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 94])
+    if not ok:
+        return 0
+    keys = {k: doc.xref_get_key(xref, k) for k in ("ColorSpace", "Intent")}
+    page.replace_image(xref, stream=enc.tobytes())
+    # replace_image reescribe el objeto con un perfil ICC propio: se restaura el perfil original
+    # (p. ej. Adobe RGB) para que los tonos de la ilustración no cambien
+    if n == 3:
+        for k, (kind, val) in keys.items():
+            if kind not in ("null", None):
+                doc.xref_set_key(xref, k, val)
+    return 1

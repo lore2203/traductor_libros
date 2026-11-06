@@ -198,3 +198,20 @@ def test_lost_vector_is_flagged_only_when_visible():
     hidden.draw_rect(pymupdf.Rect(50, 50, 100, 80), fill=(1, 0, 0))
     hidden.draw_rect(pymupdf.Rect(40, 40, 110, 90), fill=(1, 1, 1))
     assert not _graphics_differ(doc[2], doc[1], pymupdf.Rect(50, 50, 100, 80))
+
+
+def test_erasing_text_skips_colorless_mask_images():
+    """Imágenes que son solo una máscara (sin espacio de color) no deben detener la traducción."""
+    from app.pipeline.ocr import erase_text_in_images
+
+    src = pymupdf.open(Path(__file__).resolve().parents[2] / "data" / "uploads"
+                       / "cbae3b1513511999e919ead880c347462fe6932de27b0a4e6a7f90ab59f1ac01" / "original.pdf") \
+        if (Path(__file__).resolve().parents[2] / "data" / "uploads").exists() else None
+    if src is None:
+        import pytest
+        pytest.skip("libro de prueba no disponible")
+    page = src[4]
+    infos = [i for i in page.get_image_info(xrefs=True) if i.get("xref") == 23]
+    assert infos and pymupdf.Pixmap(src, 23).colorspace is None
+    r = pymupdf.Rect(infos[0]["bbox"])
+    assert erase_text_in_images(page, [r]) == 0
