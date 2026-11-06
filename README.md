@@ -11,11 +11,14 @@ pipeline: análisis → protección → traducción (DeepSeek) → reconstrucci�
 ## Instalación con Docker (recomendado)
 
 ```bash
-git clone <repositorio>
+git clone https://github.com/lore2203/traductor_libros.git
 cd traductor_libros
-cp .env.example .env        # y pon tu DEEPSEEK_API_KEY
+cp .env.example .env        # y pon tu DEEPSEEK_API_KEY (en Windows: copy .env.example .env)
 docker compose up --build
 ```
+
+Requisitos: Git y Docker Desktop. El repositorio es privado: al clonar, inicia sesión con tu cuenta de
+GitHub. El archivo `.env` (con la llave) no se sube a GitHub, así que hay que crearlo en cada equipo.
 
 Abre http://localhost:3000. Los PDF originales y traducidos quedan en `data/` (nunca dentro de la BD).
 
