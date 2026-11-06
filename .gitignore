@@ -1,4 +1,23 @@
-# Archivos a ignorar
+# Python
 venv/
+.venv/
 __pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Datos y secretos
+.env
+data/
 *.db
+*.db-wal
+*.db-shm
+
+# PDFs de prueba con derechos de autor
+backend/tests/fixtures/*.pdf
+backend/tests/fixtures/*.json
+backend/tests/output/
+
+# Frontend
+node_modules/
+.next/
